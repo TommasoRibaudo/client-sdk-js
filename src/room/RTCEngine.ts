@@ -917,6 +917,10 @@ export default class RTCEngine extends (EventEmitter as new () => TypedEventEmit
       track.codec = opts.videoCodec;
     }
 
+    const reusedSender = await this.tryReuseInactivePublisherSender(track, encodings);
+    if (reusedSender) {
+      return reusedSender;
+    }
     const transceiverInit: RTCRtpTransceiverInit = { direction: 'sendonly', streams };
     if (encodings) {
       transceiverInit.sendEncodings = encodings;
@@ -927,6 +931,47 @@ export default class RTCEngine extends (EventEmitter as new () => TypedEventEmit
       transceiverInit,
     );
 
+    return transceiver.sender;
+  }
+  
+  private async tryReuseInactivePublisherSender(
+    track: LocalTrack,
+    encodings?: RTCRtpEncodingParameters[],
+  ): Promise<RTCRtpSender | undefined> {
+    if (!this.pcManager) {
+      return undefined;
+    }
+
+    const transceiver = this.pcManager.publisher
+      .getTransceivers()
+      .find(
+        (tr) =>
+          !tr.stopped &&
+          tr.sender.track === null &&
+          tr.receiver.track.kind === track.kind &&
+          tr.direction === 'inactive',
+      );
+
+    if (!transceiver) {
+      return undefined;
+    }
+
+    transceiver.direction = 'sendonly';
+
+    if (encodings) {
+      try {
+        const parameters = transceiver.sender.getParameters();
+        parameters.encodings = encodings;
+        await transceiver.sender.setParameters(parameters);
+      } catch (error) {
+        this.log.warn('could not apply sender parameters while reusing transceiver', {
+          ...this.logContext,
+          error,
+        });
+      }
+    }
+
+    await transceiver.sender.replaceTrack(track.mediaStreamTrack);
     return transceiver.sender;
   }
 
